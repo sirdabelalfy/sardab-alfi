@@ -2,21 +2,23 @@
   "name": "sardab-alfi",
   "version": "1.0.0",
   "description": "منصة سرداب الألفي — منصة الرعب والحقائق",
-  "main": "index.js",
+  "main": "worker.js",
   "scripts": {
-    "start": "node server.js",
-    "seed": "node seed_prod.js"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@libsql/client": "^0.18.0",
-    "express": "^5.3.0",
-    "multer": "^2.5.0",
-    "nodemailer": "^10.6.1"
+    "hono": "^4.6.0",
+    "@libsql/client": "^0.14.0"
   },
   "engines": {
     "node": ">=20"
+  },
+  "type": "module",
+  "devDependencies": {
+    "wrangler": "^3.99.0"
   }
 }
