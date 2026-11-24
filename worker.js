@@ -117,6 +117,8 @@ async function initDb(q) {
       size INTEGER NOT NULL,
       data BLOB NOT NULL,
       views INTEGER NOT NULL DEFAULT 0,
+      thumb BLOB,
+      thumb_mime TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
     `CREATE TABLE IF NOT EXISTS posts (
@@ -126,6 +128,8 @@ async function initDb(q) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
   ]);
+  await q.run('ALTER TABLE videos ADD COLUMN thumb BLOB').catch(() => {});
+  await q.run('ALTER TABLE videos ADD COLUMN thumb_mime TEXT').catch(() => {});
   schemaReady = true;
 }
 
@@ -309,7 +313,7 @@ const html = (c, user, title, body, description, path) => {
 const videoGrid = (vs) => vs.length
   ? `<div class="grid">${vs.map(v => `
   <a class="vcard" href="/watch/${v.id}">
-    <div class="vthumb ${v.category}"><span>${v.category === 'facts' ? '✅' : '👻'}</span></div>
+    <div class="vthumb ${v.category}">${v.has_thumb ? `<img src="/thumb/${v.id}" alt="" loading="lazy">` : `<span>${v.category === 'facts' ? '✅' : '👻'}</span>`}</div>
     <div class="vmeta"><h3>${esc(v.title)}</h3><p>${esc(v.description).slice(0, 80)}</p>
     <div class="vstats"><span>👁 ${v.views}</span><span>${esc(String(v.created_at).slice(0, 10))}</span></div></div>
   </a>`).join('')}</div>`
@@ -351,7 +355,7 @@ app.get('/', async (c) => {
 </section>`, undefined, '/');
   }
   if (!u.email_verified || !u.phone_verified) return c.redirect('/verify');
-  const videos = await q.all('SELECT id, title, description, category, views, created_at FROM videos ORDER BY id DESC LIMIT 6');
+  const videos = await q.all('SELECT id, title, description, category, views, created_at, CASE WHEN thumb IS NULL THEN 0 ELSE 1 END has_thumb FROM videos ORDER BY id DESC LIMIT 6');
   const posts = await q.all('SELECT * FROM posts ORDER BY id DESC LIMIT 3');
   return html(c, u, 'الرئيسية', `
 <section class="hero small">
@@ -543,8 +547,8 @@ app.get('/videos', requireUser, async (c) => {
   const catQ = c.req.query('c');
   const cat = catQ === 'facts' ? 'facts' : catQ === 'horror' ? 'horror' : null;
   const videos = cat
-    ? await q.all('SELECT id, title, description, category, views, created_at FROM videos WHERE category = ? ORDER BY id DESC', [cat])
-    : await q.all('SELECT id, title, description, category, views, created_at FROM videos ORDER BY id DESC');
+    ? await q.all('SELECT id, title, description, category, views, created_at, CASE WHEN thumb IS NULL THEN 0 ELSE 1 END has_thumb FROM videos WHERE category = ? ORDER BY id DESC', [cat])
+    : await q.all('SELECT id, title, description, category, views, created_at, CASE WHEN thumb IS NULL THEN 0 ELSE 1 END has_thumb FROM videos ORDER BY id DESC');
   return html(c, c.get('user'), 'الفيديوهات', `
 <h2 class="sec-title">🎬 الفيديوهات</h2>
 <div class="tabs">
@@ -560,13 +564,13 @@ app.get('/watch/:id', requireUser, async (c) => {
   const u = c.get('user');
   const id = parseInt(c.req.param('id'), 10);
   if (!Number.isInteger(id)) return html(c, u, 'مش موجود', '<div class="card"><h1>الفيديو مش موجود</h1></div>');
-  const v = await q.get('SELECT id, title, description, category, views, created_at FROM videos WHERE id = ?', [id]);
+  const v = await q.get('SELECT id, title, description, category, views, created_at, CASE WHEN thumb IS NULL THEN 0 ELSE 1 END has_thumb FROM videos WHERE id = ?', [id]);
   if (!v) return html(c, u, 'مش موجود', '<div class="card"><h1>الفيديو مش موجود</h1></div>');
   await q.run('UPDATE videos SET views = views + 1 WHERE id = ?', [v.id]);
-  const related = await q.all('SELECT id, title, description, category, views, created_at FROM videos WHERE id != ? ORDER BY id DESC LIMIT 3', [v.id]);
+  const related = await q.all('SELECT id, title, description, category, views, created_at, CASE WHEN thumb IS NULL THEN 0 ELSE 1 END has_thumb FROM videos WHERE id != ? ORDER BY id DESC LIMIT 3', [v.id]);
   return html(c, u, v.title, `
 <div class="watch">
-  <video class="player" src="/media/${v.id}" controls playsinline preload="metadata"></video>
+  <video class="player" src="/media/${v.id}"${v.has_thumb ? ` poster="/thumb/${v.id}"` : ''} controls playsinline preload="metadata"></video>
   <div class="watch-meta">
     <span class="vcat ${v.category}">${v.category === 'facts' ? 'معلومة صح' : 'رعب'}</span>
     <h1>${esc(v.title)}</h1>
@@ -608,6 +612,17 @@ app.get('/media/:id', requireUser, async (c) => {
   const chunk = row.chunk instanceof ArrayBuffer ? new Uint8Array(row.chunk)
     : typeof row.chunk === 'string' ? fromHex(row.chunk) : new Uint8Array(row.chunk);
   return new Response(chunk, { status, headers });
+});
+
+app.get('/thumb/:id', async (c) => {
+  const q = dbOf(c);
+  const id = parseInt(c.req.param('id'), 10);
+  if (!Number.isInteger(id)) return c.body(null, 404);
+  const row = await q.get('SELECT thumb, thumb_mime FROM videos WHERE id = ?', [id]);
+  if (!row || !row.thumb) return c.body(null, 404);
+  const img = row.thumb instanceof ArrayBuffer ? new Uint8Array(row.thumb)
+    : typeof row.thumb === 'string' ? fromHex(row.thumb) : new Uint8Array(row.thumb);
+  return new Response(img, { headers: { 'Content-Type': row.thumb_mime || 'image/jpeg', 'Cache-Control': 'public, max-age=3600' } });
 });
 
 // ---------------------------------------------------------------- news
@@ -676,6 +691,7 @@ app.get('/admin', requireAdmin, async (c) => {
     </label>
     <label>الوصف<textarea name="description" rows="3" maxlength="2000"></textarea></label>
     <label>ملف الفيديو<input type="file" name="video" accept="video/mp4,video/webm,video/quicktime,video/x-matroska" required></label>
+    <label>صورة الغلاف (اختياري)<input type="file" name="thumb" accept="image/jpeg,image/png,image/webp"></label>
     <button class="btn" type="submit">رفع</button>
   </form>
 </div>
@@ -710,20 +726,32 @@ app.post('/admin/upload', requireAdmin, rateLimit('upload', 30, 3600), async (c)
   const category = body.category === 'facts' ? 'facts' : 'horror';
   const description = String(body.description || '').trim().slice(0, 2000);
   const data = new Uint8Array(await file.arrayBuffer());
+  const tfile = body.thumb;
+  let thumb = null, thumbMime = null;
+  if (tfile && typeof tfile !== 'string' && tfile.size > 0) {
+    if (!/^image\/(jpeg|png|webp)$/.test(tfile.type || '')) {
+      return c.redirect('/admin?v=' + encodeURIComponent('صورة الغلاف لازم تكون JPG أو PNG أو WebP.'));
+    }
+    if (tfile.size > 2 * 1024 * 1024) {
+      return c.redirect('/admin?v=' + encodeURIComponent('صورة الغلاف أكبر من ٢ ميجا — صغّرها وارفعها تاني.'));
+    }
+    thumb = new Uint8Array(await tfile.arrayBuffer());
+    thumbMime = tfile.type;
+  }
   const q = dbOf(c);
-  await q.run('INSERT INTO videos (title, description, category, mime, size, data) VALUES (?,?,?,?,?,?)',
-    [title, description, category, file.type, data.length, data]);
+  await q.run('INSERT INTO videos (title, description, category, mime, size, data, thumb, thumb_mime) VALUES (?,?,?,?,?,?,?,?)',
+    [title, description, category, file.type, data.length, data, thumb, thumbMime]);
   return c.redirect('/admin?v=' + encodeURIComponent('الفيديو اترفع ✅'));
 });
 
 app.get('/admin/video/:id/edit', requireAdmin, async (c) => {
   const q = dbOf(c);
-  const v = await q.get('SELECT id, title, description, category FROM videos WHERE id = ?', [parseInt(c.req.param('id'), 10) || 0]);
+  const v = await q.get('SELECT id, title, description, category, CASE WHEN thumb IS NULL THEN 0 ELSE 1 END has_thumb FROM videos WHERE id = ?', [parseInt(c.req.param('id'), 10) || 0]);
   if (!v) return html(c, c.get('user'), 'مش موجود', '<div class="card"><h1>الفيديو مش موجود</h1></div>');
   return html(c, c.get('user'), 'تعديل فيديو', `
 <div class="card form-card">
   <h1>تعديل الفيديو ✏️</h1>
-  <form method="post" action="/admin/video/${v.id}/edit">
+  <form method="post" action="/admin/video/${v.id}/edit" enctype="multipart/form-data">
     ${await csrfField(c)}
     <label>العنوان<input name="title" required maxlength="140" value="${esc(v.title)}"></label>
     <label>القسم
@@ -733,6 +761,8 @@ app.get('/admin/video/:id/edit', requireAdmin, async (c) => {
       </select>
     </label>
     <label>الوصف<textarea name="description" rows="3" maxlength="2000">${esc(v.description)}</textarea></label>
+    ${v.has_thumb ? `<label>الغلاف الحالي<br><img src="/thumb/${v.id}" alt="" style="max-width:220px;border-radius:12px"></label>` : ''}
+    <label>غيّر صورة الغلاف (اختياري)<input type="file" name="thumb" accept="image/jpeg,image/png,image/webp"></label>
     <button class="btn" type="submit">حفظ</button>
   </form>
 </div>`);
@@ -746,6 +776,14 @@ app.post('/admin/video/:id/edit', requireAdmin, async (c) => {
   const category = body.category === 'facts' ? 'facts' : 'horror';
   const description = String(body.description || '').trim().slice(0, 2000);
   await q.run('UPDATE videos SET title = ?, description = ?, category = ? WHERE id = ?', [title, description, category, id]);
+  const tfile = body.thumb;
+  if (tfile && typeof tfile !== 'string' && tfile.size > 0) {
+    if (!/^image\/(jpeg|png|webp)$/.test(tfile.type || '') || tfile.size > 2 * 1024 * 1024) {
+      return c.redirect('/admin?v=' + encodeURIComponent('البيانات اتحفظت، بس الغلاف مترفعش — لازم JPG أو PNG أو WebP أقل من ٢ ميجا.'));
+    }
+    const img = new Uint8Array(await tfile.arrayBuffer());
+    await q.run('UPDATE videos SET thumb = ?, thumb_mime = ? WHERE id = ?', [img, tfile.type, id]);
+  }
   return c.redirect('/admin?v=' + encodeURIComponent('التعديل اتحفظ ✅'));
 });
 app.post('/admin/video/:id/delete', requireAdmin, async (c) => {
