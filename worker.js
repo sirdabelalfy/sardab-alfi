@@ -614,6 +614,8 @@ app.get('/media/:id', requireUser, async (c) => {
   return new Response(chunk, { status, headers });
 });
 
+app.get('/google97d2b7fe48c6ac57.html', (c) => c.text('google-site-verification: google97d2b7fe48c6ac57.html'));
+
 app.get('/thumb/:id', async (c) => {
   const q = dbOf(c);
   const id = parseInt(c.req.param('id'), 10);
